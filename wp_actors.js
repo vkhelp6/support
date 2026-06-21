@@ -1,116 +1,120 @@
-/* wp_actors.js — window.Actors: Mitsubishi L200 + two engineers + event state machine. */
+/* wp_actors.js — sprite-based actors (Mitsubishi L200 + two field engineers).
+   Engineer A climbs the mast (smooth up / work / down loop); engineer B inspects on the ground.
+   Uses window.SPRITE_SRC/META and window.SceneArt.towerRect for mast alignment. */
 (function () {
   "use strict";
-  var st = {
-    phase: "IDLE", timer: 0, doorOpen: false,
-    truckX: -9999, climbF: 0, work: 0,
-    eng: [{ x: 0, y: 0, walk: 0, mode: "hidden" }, { x: 0, y: 0, walk: 0, mode: "hidden" }]
-  };
-  var DUR = { IDLE: 7, ARRIVE: 6, EXIT: 1.6, WALK_IN: 4, ENTER: 2.2, CLIMB: 7, WORK: 5, DESCEND: 6, WALK_OUT: 4, LEAVE: 6 };
-  function lerp(a, b, t) { return a + (b - a) * t; }
-  function ease(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+  var SRC = window.SPRITE_SRC || {};
+  var META = window.SPRITE_META || {};
+  var IMG = {};
+  function load(name) { if (!SRC[name]) return null; var i = new Image(); i.src = SRC[name]; IMG[name] = i; return i; }
+  load("truck"); load("eng_stand"); load("eng_climb");
+  function ready(n) { var i = IMG[n]; return i && i.complete && i.naturalWidth > 0; }
 
-  function next(p) {
-    var order = ["IDLE", "ARRIVE", "EXIT", "WALK_IN", "ENTER", "CLIMB", "WORK", "DESCEND", "WALK_OUT", "LEAVE"];
-    var i = order.indexOf(p); return order[(i + 1) % order.length];
+  function smooth(x) { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); }
+
+  // draw a sprite centered on cx, sitting on baseY, scaled to height h (aspect preserved)
+  function blit(c, name, cx, baseY, h, flip, rot) {
+    var m = META[name]; if (!m) return;
+    var w = h * (m.w / m.h);
+    c.save();
+    c.translate(cx, baseY);
+    if (rot) c.rotate(rot);
+    if (flip) c.scale(-1, 1);
+    if (ready(name)) c.drawImage(IMG[name], -w / 2, -h, w, h);
+    else { c.fillStyle = "#c8412f"; c.fillRect(-w / 2, -h, w, h); }
+    c.restore();
   }
 
-  function update(dt, t, L, ENV) {
-    st.timer += dt;
-    var startX = -L.W * 0.15, parkX = L.parkX, doorX = L.doorX, gy = L.groundY;
-    var d = DUR[st.phase] || 4, p = Math.min(1, st.timer / d);
-    var e0 = st.eng[0], e1 = st.eng[1];
-    switch (st.phase) {
-      case "IDLE": st.truckX = startX; st.doorOpen = false; e0.mode = e1.mode = "hidden"; st.climbF = 0; break;
-      case "ARRIVE": st.truckX = lerp(startX, parkX, ease(p)); break;
-      case "EXIT": st.truckX = parkX; e0.mode = e1.mode = "walk"; e0.x = parkX + L.W * 0.02; e1.x = parkX + L.W * 0.03; e0.y = e1.y = gy; break;
-      case "WALK_IN": e0.x = lerp(parkX + L.W * 0.02, doorX, p); e1.x = lerp(parkX + L.W * 0.03, doorX - L.W * 0.02, p); e0.walk += dt * 8; e1.walk += dt * 8; if (p > 0.7) st.doorOpen = true; break;
-      case "ENTER": st.doorOpen = true; e0.mode = "idle"; e1.mode = "idle"; e0.x = doorX; e1.x = doorX - L.W * 0.02; break;
-      case "CLIMB": st.doorOpen = false; st.climbF = ease(p); e0.mode = "climb"; e1.mode = "idle"; e1.x = L.containerX - L.W * 0.01; e1.y = gy; break;
-      case "WORK": st.climbF = 1; st.work += dt; e0.mode = "climb"; break;
-      case "DESCEND": st.climbF = 1 - ease(p); e0.mode = "climb"; break;
-      case "WALK_OUT": st.doorOpen = false; e0.mode = "walk"; e1.mode = "walk"; e0.x = lerp(L.towerBaseX, parkX + L.W * 0.02, p); e0.y = gy; e1.x = lerp(L.containerX - L.W * 0.01, parkX + L.W * 0.03, p); e0.walk += dt * 8; e1.walk += dt * 8; break;
-      case "LEAVE": e0.mode = e1.mode = "hidden"; st.truckX = lerp(parkX, L.W + L.W * 0.2, ease(p)); break;
-    }
-    if (st.timer >= d) { st.timer = 0; st.phase = next(st.phase); }
+  function shadow(c, cx, baseY, w, a) {
+    c.save(); c.globalAlpha = a; c.fillStyle = "rgba(15,20,15,1)";
+    c.beginPath(); c.ellipse(cx, baseY, w * 0.5, Math.max(3, w * 0.14), 0, 0, 6.28); c.fill(); c.restore();
   }
 
-  function getDoorOpen() { return st.doorOpen; }
+  // ---- state ----
+  var CYCLE = { up: 22, work: 8, down: 16, rest: 6 };
+  var TOTAL = CYCLE.up + CYCLE.work + CYCLE.down + CYCLE.rest;
+  var st = { climbP: 0, climbing: false, working: false, t: 0 };
 
-  function drawTruck(ctx, L, ENV, x) {
-    if (x < -L.W * 0.14 || x > L.W + L.W * 0.18) return;
-    var sc = L.scale, gy = L.roadY;
-    var bw = Math.max(150, L.W * 0.12), bh = bw * 0.32;
-    var bodyY = gy - bh;
-    ctx.save();
-    // shadow
-    ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(x + bw * 0.5, gy + 4, bw * 0.5, bh * 0.18, 0, 0, 6.28); ctx.fill();
-    // bed + body (silver)
-    ctx.fillStyle = "#d6dade"; ctx.fillRect(x, bodyY + bh * 0.25, bw, bh * 0.5);
-    // double cab
-    ctx.fillStyle = "#e7eaec"; ctx.beginPath();
-    ctx.moveTo(x + bw * 0.32, bodyY + bh * 0.25);
-    ctx.lineTo(x + bw * 0.40, bodyY - bh * 0.18);
-    ctx.lineTo(x + bw * 0.74, bodyY - bh * 0.18);
-    ctx.lineTo(x + bw * 0.80, bodyY + bh * 0.25);
-    ctx.closePath(); ctx.fill();
-    // windows
-    ctx.fillStyle = ENV.isDay ? "#6b8aa0" : "#22303c";
-    ctx.fillRect(x + bw * 0.42, bodyY - bh * 0.12, bw * 0.14, bh * 0.3);
-    ctx.fillRect(x + bw * 0.58, bodyY - bh * 0.12, bw * 0.14, bh * 0.3);
-    // bed rails
-    ctx.strokeStyle = "#b9bec2"; ctx.lineWidth = 2 * sc; ctx.strokeRect(x + bw * 0.02, bodyY + bh * 0.12, bw * 0.28, bh * 0.16);
-    // wheels
-    ctx.fillStyle = "#1b1d20";
-    [x + bw * 0.22, x + bw * 0.80].forEach(function (wx) { ctx.beginPath(); ctx.arc(wx, gy, bh * 0.26, 0, 6.28); ctx.fill(); ctx.fillStyle = "#55585c"; ctx.beginPath(); ctx.arc(wx, gy, bh * 0.1, 0, 6.28); ctx.fill(); ctx.fillStyle = "#1b1d20"; });
-    // headlight at dusk/night
-    if (!ENV.isDay) { var lg = ctx.createRadialGradient(x + bw, bodyY + bh * 0.1, 1, x + bw, bodyY + bh * 0.1, bw * 0.5); lg.addColorStop(0, "rgba(255,240,180,0.45)"); lg.addColorStop(1, "rgba(255,240,180,0)"); ctx.fillStyle = lg; ctx.beginPath(); ctx.moveTo(x + bw, bodyY); ctx.lineTo(x + bw * 1.5, bodyY - bh * 0.2); ctx.lineTo(x + bw * 1.5, bodyY + bh * 0.5); ctx.closePath(); ctx.fill(); }
-    // red MTS-ish accent stripe
-    ctx.fillStyle = "#e30611"; ctx.fillRect(x, bodyY + bh * 0.46, bw, bh * 0.06);
-    ctx.restore();
-  }
+  var Actors = {
+    update: function (dt, t, L, ENV) {
+      st.t = t;
+      var ph = t % TOTAL;
+      if (ph < CYCLE.up) { st.climbP = smooth(ph / CYCLE.up); st.climbing = true; st.working = false; }
+      else if (ph < CYCLE.up + CYCLE.work) { st.climbP = 1; st.climbing = false; st.working = true; }
+      else if (ph < CYCLE.up + CYCLE.work + CYCLE.down) { st.climbP = 1 - smooth((ph - CYCLE.up - CYCLE.work) / CYCLE.down); st.climbing = true; st.working = false; }
+      else { st.climbP = 0; st.climbing = false; st.working = false; }
+    },
 
-  function drawEngineer(ctx, L, ENV, e, t) {
-    if (e.mode === "hidden") return;
-    var sc = L.scale, hh = 30 * sc; // figure height
-    var x = e.x, y = e.y;
-    var swing = (e.mode === "walk") ? Math.sin(e.walk) * 5 * sc : 0;
-    var k = ENV.palette ? Math.max(0.4, ENV.palette.ambient) : 1;
-    function col(c) { return "rgb(" + Math.round(c[0] * k) + "," + Math.round(c[1] * k) + "," + Math.round(c[2] * k) + ")"; }
-    ctx.save();
-    // legs
-    ctx.strokeStyle = col([40, 44, 52]); ctx.lineWidth = 3 * sc; ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(x, y - hh * 0.45); ctx.lineTo(x - swing * 0.4, y); ctx.moveTo(x, y - hh * 0.45); ctx.lineTo(x + swing * 0.4, y); ctx.stroke();
-    // body (red jacket)
-    ctx.fillStyle = col([210, 40, 40]); ctx.fillRect(x - 4 * sc, y - hh, 8 * sc, hh * 0.58);
-    // reflective stripe
-    ctx.fillStyle = col([240, 240, 180]); ctx.fillRect(x - 4 * sc, y - hh * 0.62, 8 * sc, 2 * sc);
-    // arms
-    ctx.strokeStyle = col([210, 40, 40]); ctx.lineWidth = 3 * sc;
-    if (e.mode === "climb") { ctx.beginPath(); ctx.moveTo(x, y - hh * 0.85); ctx.lineTo(x - 5 * sc, y - hh); ctx.moveTo(x, y - hh * 0.85); ctx.lineTo(x + 5 * sc, y - hh * 0.7); ctx.stroke(); }
-    else { ctx.beginPath(); ctx.moveTo(x, y - hh * 0.8); ctx.lineTo(x - swing * 0.5, y - hh * 0.5); ctx.moveTo(x, y - hh * 0.8); ctx.lineTo(x + swing * 0.5, y - hh * 0.5); ctx.stroke(); }
-    // head + hard hat
-    ctx.fillStyle = col([225, 195, 165]); ctx.beginPath(); ctx.arc(x, y - hh - 1 * sc, 4.5 * sc, 0, 6.28); ctx.fill();
-    ctx.fillStyle = col([240, 200, 30]); ctx.beginPath(); ctx.arc(x, y - hh - 2.5 * sc, 5.2 * sc, Math.PI, 0); ctx.fill(); ctx.fillRect(x - 6 * sc, y - hh - 2.5 * sc, 12 * sc, 1.6 * sc);
-    ctx.restore();
-  }
+    getDoorOpen: function () { return false; },
 
-  function draw(ctx, L, ENV, t) {
-    drawTruck(ctx, L, ENV, st.truckX);
-    // climbing engineer on the tower
-    if (st.climbF > 0.001 || st.phase === "CLIMB" || st.phase === "WORK" || st.phase === "DESCEND") {
-      var cx = L.towerBaseX, cy = lerp(L.groundY, L.towerTopY + 16 * L.scale, st.climbF);
-      var ce = { x: cx, y: cy, mode: "climb", walk: 0 };
-      drawEngineer(ctx, L, ENV, ce, t);
-      if (st.phase === "WORK") { // tool sparkle while swapping antenna
-        var s = (Math.sin(t * 20) > 0) ? 1 : 0.2; ctx.fillStyle = "rgba(255,220,120," + s + ")";
-        ctx.beginPath(); ctx.arc(cx + 8 * L.scale, cy - 26 * L.scale, 2.5 * L.scale, 0, 6.28); ctx.fill();
+    draw: function (c, L, ENV, t) {
+      var H = L.H, W = L.W;
+
+      // --- Mitsubishi L200, parked in the foreground ---
+      var truckH = Math.max(70, H * 0.135);
+      var truckCx = L.parkX;
+      var truckBaseY = L.groundY + (H - L.groundY) * 0.42;
+      var tm = META.truck || { w: 880, h: 596 };
+      var truckW = truckH * (tm.w / tm.h);
+      shadow(c, truckCx, truckBaseY, truckW * 0.92, 0.30);
+      blit(c, "truck", truckCx, truckBaseY, truckH, false, 0);
+      // headlights glow at night (truck faces right -> lights on right side)
+      if (!ENV.isDay) {
+        c.save();
+        var hx = truckCx + truckW * 0.46, hy = truckBaseY - truckH * 0.42;
+        var gr = c.createRadialGradient(hx, hy, 0, hx, hy, truckW * 0.9);
+        gr.addColorStop(0, "rgba(255,244,200,0.45)");
+        gr.addColorStop(1, "rgba(255,244,200,0)");
+        c.fillStyle = gr; c.beginPath();
+        c.moveTo(hx, hy); c.lineTo(hx + truckW * 0.95, hy - truckH * 0.25);
+        c.lineTo(hx + truckW * 0.95, hy + truckH * 0.35); c.closePath(); c.fill();
+        c.restore();
       }
+
+      // --- Engineer A: climbing the mast ---
+      var r = (window.SceneArt && window.SceneArt.towerRect) ? window.SceneArt.towerRect(L) : null;
+      if (r) {
+        var engH = Math.max(34, H * 0.07);
+        var bottomY = r.baseY - 4;
+        var topY = r.topY + r.h * 0.16;
+        var ey = bottomY + (topY - bottomY) * st.climbP;
+        var ex = r.axisX + r.w * 0.02;
+        if (st.climbing) {
+          // hand-over-hand bob + slight sway
+          var bob = Math.sin(t * 6.5) * engH * 0.04;
+          var sway = Math.sin(t * 3.2) * engH * 0.05;
+          shadowOnMast(c, ex, ey);
+          blit(c, "eng_climb", ex + sway, ey + bob, engH, false, Math.sin(t * 3.2) * 0.03);
+        } else if (st.working) {
+          var wob = Math.sin(t * 2.5) * engH * 0.03;
+          blit(c, "eng_stand", ex, ey + wob, engH, false, 0);
+          // tool spark while working
+          c.save();
+          c.globalAlpha = 0.5 + 0.5 * Math.abs(Math.sin(t * 9));
+          c.fillStyle = "rgba(255,230,160,0.9)";
+          c.beginPath(); c.arc(ex + engH * 0.18, ey - engH * 0.55, engH * 0.05, 0, 6.28); c.fill();
+          c.restore();
+        } else {
+          // resting at base, looking up
+          blit(c, "eng_stand", ex, bottomY, engH, false, 0);
+        }
+      }
+
+      // --- Engineer B: inspecting on the ground between the truck and the compound ---
+      var bH = Math.max(44, H * 0.095);
+      var bx = W * 0.31;
+      var by = L.groundY + 2;
+      var idleBob = Math.sin(t * 1.6) * bH * 0.02;
+      var faceLeft = false; // faces the tower/compound to the right
+      shadow(c, bx, by, bH * 0.5, 0.28);
+      blit(c, "eng_stand", bx, by + idleBob, bH, faceLeft, 0);
     }
-    // ground engineers
-    drawEngineer(ctx, L, ENV, st.eng[0].mode === "climb" ? { mode: "hidden" } : st.eng[0], t);
-    drawEngineer(ctx, L, ENV, st.eng[1], t);
+  };
+
+  function shadowOnMast(c, x, y) {
+    c.save(); c.globalAlpha = 0.18; c.fillStyle = "rgba(0,0,0,1)";
+    c.beginPath(); c.ellipse(x, y, 10, 4, 0, 0, 6.28); c.fill(); c.restore();
   }
 
-  window.Actors = { update: update, draw: draw, getDoorOpen: getDoorOpen };
+  window.Actors = Actors;
 })();

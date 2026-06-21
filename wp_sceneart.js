@@ -1,106 +1,131 @@
-/* wp_sceneart.js — window.SceneArt: field, 70m lattice tower, equipment container. */
+/* wp_sceneart.js — sprite-based scene (ground, container, tower) for the live wallpaper.
+   Uses window.SPRITE_SRC / window.SPRITE_META (base64 atlas). Exposes window.SceneArt with
+   drawField / drawContainer / drawTower and a shared towerRect() helper used by Actors. */
 (function () {
   "use strict";
-  function amb(ENV) { return ENV.palette ? ENV.palette.ambient : 1; }
-  function shade(c, k) { k = Math.max(0.18, Math.min(1, k)); return "rgb(" + Math.round(c[0] * k) + "," + Math.round(c[1] * k) + "," + Math.round(c[2] * k) + ")"; }
-  function isSnow(ENV) { var w = ENV.weatherCode; return (w >= 71 && w <= 77) || w === 85 || w === 86; }
+  var SRC = window.SPRITE_SRC || {};
+  var META = window.SPRITE_META || {};
+  var IMG = {};
+  function load(name) { if (!SRC[name]) return null; var i = new Image(); i.src = SRC[name]; IMG[name] = i; return i; }
+  load("tower"); load("container");
 
-  function drawField(ctx, L, ENV, t) {
-    var k = amb(ENV);
-    var snow = isSnow(ENV) || ENV.temp < 1;
-    // distant treeline along the horizon
-    ctx.fillStyle = shade(snow ? [120, 130, 120] : [44, 70, 48], k * 0.85);
-    ctx.beginPath(); ctx.moveTo(0, L.groundY);
-    var step = Math.max(18, L.W / 60);
-    for (var x = 0; x <= L.W; x += step) {
-      var h = (Math.sin(x * 0.05) * 0.5 + 0.5) * 14 * L.scale + 10 * L.scale;
-      ctx.lineTo(x, L.groundY - h);
-    }
-    ctx.lineTo(L.W, L.groundY); ctx.closePath(); ctx.fill();
-    // ground
-    var g = ctx.createLinearGradient(0, L.groundY, 0, L.H);
-    var top = snow ? [225, 230, 235] : [88, 104, 60];
-    var bot = snow ? [200, 206, 214] : [60, 72, 40];
-    g.addColorStop(0, shade(top, k)); g.addColorStop(1, shade(bot, k));
-    ctx.fillStyle = g; ctx.fillRect(0, L.groundY, L.W, L.H - L.groundY);
-    // dirt road sweeping toward the parking spot
-    ctx.strokeStyle = shade(snow ? [170, 170, 175] : [96, 80, 58], k);
-    ctx.lineWidth = Math.max(16, L.H * 0.05); ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(-20, L.H - 6); ctx.quadraticCurveTo(L.W * 0.12, L.roadY, L.parkX + 30, L.roadY - 4); ctx.stroke();
-    ctx.lineWidth = 2;
-    // grass tufts / texture
-    if (!snow) { ctx.strokeStyle = shade([70, 92, 48], k); for (var i = 0; i < 80; i++) { var gx = (i * 97.3) % L.W; var gy = L.groundY + ((i * 53.7) % (L.H - L.groundY)); ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + 2, gy - 5 - (i % 3)); ctx.stroke(); } }
+  function ready(name) { var i = IMG[name]; return i && i.complete && i.naturalWidth > 0; }
+
+  // soft ground shadow ellipse
+  function shadow(c, cx, baseY, w, alpha) {
+    c.save();
+    c.globalAlpha = alpha;
+    c.fillStyle = "rgba(15,20,15,1)";
+    c.beginPath();
+    c.ellipse(cx, baseY, w * 0.5, Math.max(4, w * 0.10), 0, 0, 6.28);
+    c.fill();
+    c.restore();
   }
 
-  function drawTower(ctx, L, ENV, t) {
-    var k = amb(ENV);
-    var bx = L.towerBaseX, by = L.groundY, ty = L.towerTopY;
-    var bh = L.towerBaseW / 2, th = L.towerTopW / 2;
-    var sway = (ENV.windKmh || 0) * 0.06 * L.scale;
-    function off(f) { return Math.sin(t * 0.7 + f * 1.2) * sway * f * f; } // f=0..1 height fraction
-    function lx(f) { return bx - (bh + (th - bh) * f) + off(f); }
-    function rx(f) { return bx + (bh + (th - bh) * f) + off(f); }
-    function yy(f) { return by + (ty - by) * f; }
-    var col = shade([150, 156, 164], k);
-    ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, 3.5 * L.scale); ctx.lineJoin = "round";
-    var N = 16;
-    // legs
-    ctx.beginPath(); ctx.moveTo(lx(0), yy(0)); for (var i = 1; i <= N; i++) ctx.lineTo(lx(i / N), yy(i / N)); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(rx(0), yy(0)); for (var j = 1; j <= N; j++) ctx.lineTo(rx(j / N), yy(j / N)); ctx.stroke();
-    // bracing (zigzag + horizontals)
-    ctx.lineWidth = Math.max(1, 1.8 * L.scale);
-    for (var s = 0; s < N; s++) {
-      var f0 = s / N, f1 = (s + 1) / N;
-      ctx.beginPath(); ctx.moveTo(lx(f0), yy(f0)); ctx.lineTo(rx(f1), yy(f1)); ctx.moveTo(rx(f0), yy(f0)); ctx.lineTo(lx(f1), yy(f1)); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(lx(f0), yy(f0)); ctx.lineTo(rx(f0), yy(f0)); ctx.stroke();
-    }
-    // platforms
-    ctx.strokeStyle = shade([120, 126, 134], k); ctx.lineWidth = Math.max(2, 2.5 * L.scale);
-    [0.55, 0.85].forEach(function (f) { ctx.beginPath(); ctx.moveTo(lx(f) - 4, yy(f)); ctx.lineTo(rx(f) + 4, yy(f)); ctx.stroke(); });
-    // antennas (3 sector) + microwave dish near top
-    var aF = 0.9, ay = yy(aF), aw = Math.max(7, 9 * L.scale), ah = Math.max(26, 34 * L.scale);
-    ctx.fillStyle = shade([235, 238, 242], k);
-    var axc = bx + off(aF);
-    [-1, 0, 1].forEach(function (d) { var ax = axc + d * (th + 14 * L.scale) * 1.4; ctx.fillRect(ax - aw / 2, ay - ah, aw, ah); });
-    // dish
-    ctx.fillStyle = shade([225, 228, 232], k); ctx.beginPath(); ctx.ellipse(axc + (th + 26 * L.scale), yy(0.78), 16 * L.scale, 20 * L.scale, 0, 0, 6.28); ctx.fill();
-    ctx.strokeStyle = shade([120, 124, 130], k); ctx.stroke();
-    // aviation light (blinks; brighter at night)
-    var blink = (Math.sin(t * 3.0) > 0.2) ? 1 : 0.15;
-    var glow = blink * (ENV.isDay ? 0.5 : 1);
-    var tx = bx + off(1), tyT = yy(1);
-    var rg = ctx.createRadialGradient(tx, tyT - ah - 6, 1, tx, tyT - ah - 6, 16 * L.scale);
-    rg.addColorStop(0, "rgba(255,40,30," + glow + ")"); rg.addColorStop(1, "rgba(255,40,30,0)");
-    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(tx, tyT - ah - 6, 16 * L.scale, 0, 6.28); ctx.fill();
-    ctx.fillStyle = "rgba(255,60,50," + Math.max(0.4, glow) + ")"; ctx.beginPath(); ctx.arc(tx, tyT - ah - 6, Math.max(2.5, 3.5 * L.scale), 0, 6.28); ctx.fill();
+  // tower on-screen rect (shared with actors so the climber aligns to the mast)
+  function towerRect(L) {
+    var m = META.tower || { w: 672, h: 1000 };
+    var h = L.towerH;
+    var w = h * (m.w / m.h);
+    var baseY = L.groundY;
+    return { x: L.towerBaseX - w / 2, y: baseY - h, w: w, h: h, axisX: L.towerBaseX, topY: baseY - h, baseY: baseY };
   }
 
-  function drawContainer(ctx, L, ENV, t, doorOpen) {
-    var k = amb(ENV);
-    var x = L.containerX, y = L.containerY, w = L.containerW, h = L.containerH;
-    // body
-    ctx.fillStyle = shade([170, 176, 182], k); ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = shade([150, 156, 162], k); ctx.fillRect(x, y, w, Math.max(6, h * 0.12)); // roof shade
-    // corrugation ribs
-    ctx.strokeStyle = shade([135, 140, 147], k); ctx.lineWidth = 1.5;
-    for (var rx = x + 8; rx < x + w - 4; rx += Math.max(8, w * 0.06)) { ctx.beginPath(); ctx.moveTo(rx, y + 4); ctx.lineTo(rx, y + h); ctx.stroke(); }
-    // small window
-    ctx.fillStyle = doorOpen || !ENV.isDay ? shade([255, 220, 140], Math.max(k, 0.7)) : shade([90, 110, 130], k);
-    ctx.fillRect(x + w * 0.12, y + h * 0.28, w * 0.16, h * 0.22);
-    // door on the side facing doorX (right)
-    var dw = w * 0.22, dh = h * 0.72, dx = x + w - dw - 6, dy = y + h - dh;
-    if (doorOpen) {
-      // interior glow
-      ctx.fillStyle = shade([255, 210, 130], Math.max(k, 0.8)); ctx.fillRect(dx, dy, dw, dh);
-      // open door panel angled out
-      ctx.fillStyle = shade([120, 126, 132], k);
-      ctx.beginPath(); ctx.moveTo(dx, dy); ctx.lineTo(dx - dw * 0.8, dy + dh * 0.08); ctx.lineTo(dx - dw * 0.8, dy + dh * 0.92); ctx.lineTo(dx, dy + dh); ctx.closePath(); ctx.fill();
-    } else {
-      ctx.fillStyle = shade([110, 116, 124], k); ctx.fillRect(dx, dy, dw, dh);
-      ctx.fillStyle = shade([80, 84, 90], k); ctx.fillRect(dx + dw * 0.7, dy + dh * 0.45, dw * 0.12, dh * 0.08);
-    }
-    ctx.strokeStyle = shade([90, 94, 100], k); ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
-  }
+  var SceneArt = {
+    towerRect: towerRect,
 
-  window.SceneArt = { drawField: drawField, drawTower: drawTower, drawContainer: drawContainer };
+    drawField: function (c, L, ENV, t) {
+      var amb = (ENV.palette && ENV.palette.ambient != null) ? ENV.palette.ambient : 0.6;
+      var gy = L.groundY, H = L.H, W = L.W;
+      // grass / ground gradient (darkened by ambient)
+      var g = c.createLinearGradient(0, gy, 0, H);
+      var k = 0.55 + amb * 0.45;
+      function shade(r, gr, b) { return "rgb(" + Math.round(r * k) + "," + Math.round(gr * k) + "," + Math.round(b * k) + ")"; }
+      g.addColorStop(0, shade(96, 120, 74));
+      g.addColorStop(0.5, shade(74, 96, 58));
+      g.addColorStop(1, shade(52, 70, 44));
+      c.fillStyle = g; c.fillRect(0, gy, W, H - gy);
+
+      // distant treeline / hills at the horizon for depth (behind the compound)
+      c.save();
+      var hy = gy;
+      c.fillStyle = "rgba(" + Math.round(58 * k) + "," + Math.round(78 * k) + "," + Math.round(56 * k) + ",0.95)";
+      c.beginPath(); c.moveTo(0, hy);
+      for (var hx = 0; hx <= W; hx += W / 26) {
+        var tt = Math.sin(hx * 0.013) * 0.5 + Math.sin(hx * 0.041 + 1.7) * 0.5;
+        c.lineTo(hx, hy - (8 + (tt + 1) * 0.5 * H * 0.045));
+      }
+      c.lineTo(W, hy); c.closePath(); c.fill();
+      // a few darker conifer silhouettes
+      c.fillStyle = "rgba(" + Math.round(40 * k) + "," + Math.round(60 * k) + "," + Math.round(42 * k) + ",0.95)";
+      for (var ti = 0; ti < 9; ti++) {
+        var tx = (ti + 0.5) * W / 9 + Math.sin(ti * 2.3) * 30;
+        var th = H * (0.035 + (Math.sin(ti * 1.7) * 0.5 + 0.5) * 0.03);
+        c.beginPath(); c.moveTo(tx, hy); c.lineTo(tx - th * 0.32, hy); c.lineTo(tx, hy - th); c.lineTo(tx + th * 0.32, hy); c.closePath(); c.fill();
+      }
+      c.restore();
+
+      // gravel compound pad under tower + container
+      var padX = Math.min(L.containerX - W * 0.02, towerRect(L).x - W * 0.02);
+      var padR = towerRect(L).x + towerRect(L).w + W * 0.03;
+      var padY = gy + (H - gy) * 0.02;
+      c.save();
+      c.fillStyle = "rgba(" + Math.round(150 * k) + "," + Math.round(146 * k) + "," + Math.round(138 * k) + ",0.9)";
+      c.beginPath();
+      c.moveTo(padX, padY);
+      c.lineTo(padR, padY);
+      c.lineTo(padR + 40, gy + (H - gy) * 0.34);
+      c.lineTo(padX - 40, gy + (H - gy) * 0.34);
+      c.closePath(); c.fill();
+      c.restore();
+    },
+
+    drawContainer: function (c, L, ENV, t, doorOpen) {
+      var m = META.container || { w: 820, h: 556 };
+      var w = L.containerW * 1.25;
+      var h = w * (m.h / m.w);
+      var x = L.containerX;
+      var baseY = L.groundY + 2;
+      var y = baseY - h;
+      shadow(c, x + w / 2, baseY, w * 0.92, 0.28);
+      if (ready("container")) {
+        c.drawImage(IMG.container, x, y, w, h);
+      } else {
+        c.fillStyle = "#8c9298"; c.fillRect(x, y, w, h);
+      }
+      // lit window at night
+      if (!ENV.isDay) {
+        c.save();
+        c.globalAlpha = 0.7 + 0.2 * Math.sin(t * 1.3);
+        c.fillStyle = "rgba(255,214,120,0.9)";
+        c.fillRect(x + w * 0.16, y + h * 0.30, w * 0.12, h * 0.18);
+        c.restore();
+      }
+    },
+
+    drawTower: function (c, L, ENV, t) {
+      var r = towerRect(L);
+      shadow(c, r.axisX, r.baseY, r.w * 0.85, 0.22);
+      if (ready("tower")) {
+        c.drawImage(IMG.tower, r.x, r.y, r.w, r.h);
+      } else {
+        c.strokeStyle = "#8a8f96"; c.lineWidth = 3;
+        c.beginPath(); c.moveTo(r.axisX - r.w / 2, r.baseY); c.lineTo(r.axisX, r.topY); c.lineTo(r.axisX + r.w / 2, r.baseY); c.stroke();
+      }
+      // pulsing aviation beacon near the very top
+      var bx = r.axisX, by = r.topY + r.h * 0.045;
+      var pulse = 0.45 + 0.55 * Math.pow(0.5 + 0.5 * Math.sin(t * 2.2), 2);
+      c.save();
+      var gr = c.createRadialGradient(bx, by, 0, bx, by, r.w * 0.18);
+      gr.addColorStop(0, "rgba(255,60,40," + (0.85 * pulse) + ")");
+      gr.addColorStop(1, "rgba(255,60,40,0)");
+      c.fillStyle = gr;
+      c.beginPath(); c.arc(bx, by, r.w * 0.18, 0, 6.28); c.fill();
+      c.fillStyle = "rgba(255,90,70," + (0.6 + 0.4 * pulse) + ")";
+      c.beginPath(); c.arc(bx, by, Math.max(2, r.w * 0.022), 0, 6.28); c.fill();
+      c.restore();
+    }
+  };
+
+  window.SceneArt = SceneArt;
 })();
