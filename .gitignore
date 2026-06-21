@@ -1,3 +1,6 @@
 .env
 __pycache__/
 *.pyc
+scene_*.png
+opt_*.png
+*.bak
